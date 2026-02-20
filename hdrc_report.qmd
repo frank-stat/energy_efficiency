@@ -33,6 +33,7 @@ library(duckdb)
 library(sf)
 library(leaflet)
 library(htmltools)
+library(leaflet.providers)
 ```
 
 ```{r}
