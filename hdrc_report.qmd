@@ -193,7 +193,7 @@ saveRDS(df2_oa_centroid, "df2_oa_centroid.RDS")
 
 ```{r}
 #| label: outputs
-#| eval: false
+
 
 df <- readRDS("df.RDS")
 df2_oa <- readRDS("df2_oa.RDS")
@@ -345,11 +345,6 @@ map2 <- leaflet() %>%
             title = "% with A to C energy efficiency (output areas)", data = df2_oa_centroid) 
 
 
-saveRDS(table1, "table1.RDS")
-saveRDS(table2, "table2.RDS")
-saveRDS(map1, "map1.RDS")
-saveRDS(map2, "map2.RDS")
-
 ```
 
 ## Energy efficiency by tenure
@@ -364,7 +359,7 @@ Table 1 shows the average energy efficiency rating (out of 100) by tenure for th
 #| label: tbl-mean-ee-by-tenure
 #| tbl-cap: Mean energy efficiency by tenure
 
-readRDS("table1.RDS")
+table1
 
 ```
 
@@ -375,7 +370,7 @@ A similar picture is seen in Table 2 to Table 1 when we look at whether a proper
 #| label: tbl-atoc-ee-by-tenure
 #| tbl-cap: A to C energy efficiency by tenure
 
-readRDS("table2.RDS")
+table2
 
 ```
 
@@ -386,7 +381,7 @@ Figure 1 maps the percentage of properties in an output area (neighbourhood of a
 #| label: fig-atoc-oa
 #| fig-cap: "% of properties A to C by output areas"
 
-readRDS("map1.RDS")
+map1
 
 ```
 
@@ -396,6 +391,6 @@ Figure 2 is Figure 1 but potential energy efficiency rather than current.
 #| label: fig-atoc-oa-pot
 #| fig-cap: "Potential % of properties A to C by output areas"
 
-readRDS("map2.RDS")
+map2
 
 ```
