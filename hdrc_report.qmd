@@ -1,0 +1,400 @@
+---
+title: "Energy efficiency in NHS Grampian by tenure: evidence from open data"
+author: "Frank Popham and Jess Butler"
+date: today
+format: 
+  html:
+    execute:
+      echo: false
+      message: false
+      warning: false
+    fig-width: 7
+    fig-height: 9
+toc: true
+---
+
+## Introduction
+
+If you rent or buy a home an [energy performance certificate](https://www.gov.scot/publications/energy-performance-certificates-guide/) might be familiar to you. This expert assessment of the property gives the current and potential energy efficiency of the home summarised by the well-known A to G rating. The energy efficiency of the property has important implications for health for example through whether you are able to afford to heat your house to maintain a healthy living environment.
+
+Data from energy performance certificate reports is made publicly available through the [Scottish Government](https://statistics.gov.scot/resource?uri=http%3A%2F%2Fstatistics.gov.scot%2Fdata%2Fdomestic-energy-performance-certificates--extended-historic-dataset). As it is updated quarterly the results presented here can easily be updated at each new release. This report covers certificates issued up-to the end of September 2025. Analysis is restricted to the latest certificate issued for that property (properties can have multiple certificates if there are multiple sales or rentals). As certificates are required at sell or rental then not all properties have ever had a certificate. [In 2024 it is estimated](https://www.nrscotland.gov.uk/publications/households-and-dwellings-in-scotland-2024/) that there were 125828 dwellings in Aberdeen City,  123367 in Aberdeenshire and 47471 in Moray which means we have energy performance certificates for roughly 62%, 63% and 66% of dwellings respectively. This could bias results if those properties without differ significantly. It is also important to realise that certificates are potentially out-of-date (their mean age is around 6 years) if energy efficiency changes have taken place.
+
+::: callout-important
+## Local authority data may differ
+
+We think that councils often have more recent energy performance reports (as opposed to energy performance certificate reports) for their properties. Energy performance reports, although similar, do NOT lead to an official energy performance certificate being issued or recorded on the open database we use in this report
+:::
+
+```{r}
+library(arrow)
+library(tidyverse)
+library(gt)
+library(duckdb)
+library(sf)
+library(leaflet)
+library(htmltools)
+```
+
+```{r}
+#| label: datasetup
+#| eval: false
+
+
+
+# source  https://statistics.gov.scot/data/domestic-energy-performance-certificates--extended-historic-database
+df <- read_parquet("epc_2025q3.parquet", col_select = c(historical, osg_uprn,
+                                                        date_of_assessment, type_of_assessment,
+                                                        date_of_certificate, current_energy_efficiency_rating,
+                                                        current_energy_efficiency_rating_band,
+                                                        potential_energy_efficiency_rating,
+                                                        potential_energy_efficiency_rating_band,
+                                                        part_1_construction_age_band,
+                                                        tenure,
+                                                        transaction_type,
+                                                        built_form,
+                                                        property_type,
+                                                        local_authority)) %>%
+  filter(local_authority %in% c("Aberdeen City", "Aberdeenshire", "Moray"))
+
+
+# some tidying 
+
+count(df, historical)
+
+df <- df %>%
+  mutate(historical = historical %in% c("TRUE", "True"))
+
+count(df, historical)
+
+# something weird with date of assessment - two dates needed manual entry
+
+df <- df %>%
+  mutate(date_of_assessment_2 = parse_date_time(date_of_assessment, c("ymd", "dmy"))) %>%
+  mutate(date_of_certificate_2 = parse_date_time(date_of_certificate, c("ymd", "dmy"))) 
+
+range(df$date_of_assessment_2)
+range(df$date_of_certificate_2)
+
+df <- df %>%
+  mutate(date_of_assessment_2 = if_else(date_of_assessment_2 == 
+                                          ymd("0001-01-01"),
+                                         date_of_certificate_2,
+                                        date_of_assessment_2)) %>%
+  mutate(date_of_assessment_2 = if_else(date_of_assessment_2 == 
+                                          ymd("0015-08-08"),
+                                         ymd("2015-08-08"),
+                                        date_of_assessment_2)) 
+  
+range(df$date_of_assessment_2)
+range(df$date_of_certificate_2)
+
+df <- df %>%
+  select(-date_of_assessment, -date_of_certificate)
+
+df <- df %>%
+  mutate(current_energy_efficiency_rating = as.numeric(current_energy_efficiency_rating),
+         potential_energy_efficiency_rating = as.numeric(potential_energy_efficiency_rating))
+
+# OK select latest via historical (select false as true that they are historical)
+
+df <- df %>%
+  filter(!historical)
+
+# check if any duplicates (apart from NA) by UPRN (2 so select max date of assessment)
+
+df <- df %>%
+  mutate(check = sum(!is.na(osg_uprn)), .by = osg_uprn)
+  
+
+df_check <- df %>%
+  filter(check > 1) %>%
+  slice_max(date_of_assessment_2, n = 1, with_ties = FALSE,  by = osg_uprn)
+
+df <- df %>%
+  filter(check < 2)
+
+df <- df %>%
+  bind_rows(df_check)
+
+df <- df %>%
+  mutate(check = sum(!is.na(osg_uprn)), .by = osg_uprn)
+
+range(df$check)
+
+# some additions
+
+max_doc <- max(df$date_of_certificate_2) 
+
+df <- df %>%
+  mutate(how_old = time_length(interval(date_of_certificate_2, max_doc), "years")) %>%
+  mutate(current_above_c  = if_else(current_energy_efficiency_rating_band < "D", 1, 0)) %>%
+  mutate(potential_above_c  = if_else(potential_energy_efficiency_rating_band < "D", 1, 0))
+
+
+# all uprns
+
+con_base <- dbConnect(duckdb(), dbdir = "base.duckdb")
+
+
+uprn_nov_2025 <- tbl(con_base, "read_csv('../../atlas/Data/NSUL_NOV_2025_SC.csv')") %>% 
+  left_join(tbl(con_base, "read_csv('../../atlas/osopenuprn_202511.csv')"), join_by(UPRN)) %>%
+  rename_with(tolower) %>%
+  select(uprn, postcode = pcds, local_authority = lad25cd, electoral_ward =  wd25cd, health_board = hlth19cd, 
+         parliament_con = pcon24cd, travel_work = ttwa15cd, itl_area = itl25cd, data_zone = lsoa21cd, 
+         intermediate_zone = msoa21cd,
+         output_area = oa21cd, chp = sicbl24cd, urban_rural = ruc21ind, latitude,  longitude) %>%
+  filter(health_board == "S08000020") %>%
+  collect()
+
+#map at output area, need 10 or more
+
+df2 <- df %>%
+  filter_out(is.na(osg_uprn)) %>%
+  mutate(osg_uprn = as.numeric(osg_uprn)) %>%
+  left_join(uprn_nov_2025, join_by(osg_uprn == uprn)) %>%
+  summarise(current_above_c = floor(mean(current_above_c)*100),
+            potential_above_c = floor(mean(potential_above_c)*100),
+            n = n(),
+            .by = output_area) %>%
+  mutate(current_above_c2 = 
+           cut(current_above_c, breaks = c(0, 20, 40, 60, 80, 100), 
+               include.lowest = TRUE, right = FALSE,
+         labels= c("0 to 19", "20 to 39", "40 to 59", "60 to 79", "80 to 100"))) %>%
+  mutate(current_above_c2 = if_else(n < 11, NA, current_above_c2)) %>%
+  mutate(potential_above_c2 = 
+           cut(potential_above_c, breaks = c(0, 20, 40, 60, 80, 100), 
+               include.lowest = TRUE, right = FALSE,
+         labels= c("0 to 19", "20 to 39", "40 to 59", "60 to 79", "80 to 100"))) %>%
+  mutate(potential_above_c2 = if_else(n < 11, NA, potential_above_c2))
+
+
+oa_boundaries <- st_read("../../atlas/output_area_boundaries/OutputArea2022_MHW") %>%
+  filter(council %in% c("S12000033", "S12000034", "S12000020"))
+                  
+                  
+ df2 <- df2 %>%
+  full_join(oa_boundaries, join_by(output_area == code))
+  
+df2_oa <- st_as_sf(df2)
+  
+df2_oa_centroid <- df2_oa %>%
+  mutate(geometry = st_centroid(geometry)) %>%
+  st_transform(., crs = 4326)
+  
+df2_oa <- df2_oa %>%
+  st_transform(., crs = 4326)
+    
+saveRDS(df, "df.RDS")
+saveRDS(df2_oa, "df2_oa.RDS")
+saveRDS(df2_oa_centroid, "df2_oa_centroid.RDS")
+
+```
+
+```{r}
+#| label: outputs
+#| eval: false
+
+df <- readRDS("df.RDS")
+df2_oa <- readRDS("df2_oa.RDS")
+df2_oa_centroid <- readRDS("df2_oa_centroid.RDS")
+
+
+energy_eff <- c("current_energy_efficiency_rating",
+                "potential_energy_efficiency_rating",
+                "how_old",
+                "potential_above_c",
+                "current_above_c")
+
+
+avg_by_var <- function(.out, .byby, .la = FALSE) {
+  
+  if(.la) {
+  .df <- df %>%
+    select(out =.out, char = .byby, la = local_authority)
+  }
+  else{
+  .df <- df %>%
+    select(out =.out, char = .byby) %>%
+    mutate(la = NA)
+  }
+ 
+  r <- .df %>%
+       summarise(median = median(out, na.rm = TRUE),
+                 mean = mean(out, na.rm = TRUE),
+                 n = sum(!is.na(out)), .by = c(char, la)) %>%
+    mutate(by = .byby)
+ 
+  if(.la) {
+    
+  la <-  .df %>%
+       summarise(median = median(out, na.rm = TRUE),
+                 mean = mean(out, na.rm = TRUE),
+                 n = sum(!is.na(out)), .by = la) %>%
+    mutate(by = "local_authority")
+  }  
+
+  overall <- .df %>%
+       summarise(median = median(out, na.rm = TRUE),
+                 mean = mean(out, na.rm = TRUE),
+                 n = sum(!is.na(out))) %>%
+    mutate(by = "overall")
+
+  if(.la) {
+    bind_rows(r, overall, la)
+  } else {
+    bind_rows(r, overall)
+ }  
+}
+
+tenure <- map(energy_eff, ~avg_by_var(.x, "tenure")) %>%
+  set_names(energy_eff) %>%
+  list_rbind(names_to = "what")
+
+tenure_la <- map(energy_eff, ~avg_by_var(.x, "tenure", .la = TRUE)) %>%
+  set_names(energy_eff) %>%
+  list_rbind(names_to = "what")
+
+property_type <- map(energy_eff, ~avg_by_var(.x, "property_type")) %>%
+  set_names(energy_eff) %>%
+  list_rbind(names_to = "what")
+
+property_type_la <- map(energy_eff, ~avg_by_var(.x, "property_type", .la = TRUE)) %>%
+  set_names(energy_eff) %>%
+  list_rbind(names_to = "what")
+
+age <- map(energy_eff, ~avg_by_var(.x, "part_1_construction_age_band")) %>%
+  set_names(energy_eff) %>%
+  list_rbind(names_to = "what")
+
+age_la <- map(energy_eff, ~avg_by_var(.x, "part_1_construction_age_band", .la = TRUE)) %>%
+  set_names(energy_eff) %>%
+  list_rbind(names_to = "what")
+
+efficiency <- bind_rows(tenure = tenure,
+                        tenure_la = tenure_la,
+                        .id = "source") %>%
+   filter(str_detect(what, "current_") | str_detect(what, "potential_")) %>%
+   mutate(char = if_else(is.na(char), la, char)) %>%
+   mutate(char = if_else(is.na(char), by, char)) %>%
+   mutate(la = if_else(is.na(la), "NHS Grampian", la)) %>%
+   select(-median) %>%
+   pivot_wider(names_from = what, values_from = c(mean, n)) %>%
+   mutate(gap_eff = mean_potential_energy_efficiency_rating - mean_current_energy_efficiency_rating) %>%
+   mutate(gap_c = mean_potential_above_c - mean_current_above_c) %>%
+   mutate(n = n_potential_above_c) %>%
+   select(-starts_with("n_")) %>%
+   mutate(char = str_to_title(char)) %>%
+   mutate(char = replace_values(char, "Unknown" ~ "Tenure not known"))
+
+table1 <- efficiency %>%
+  mutate(across(ends_with("_c"), ~.x*100)) %>%
+  mutate(across(where(is.numeric), ~round(.x, 0))) %>%
+  select(Area = la, Tenure = char, "No of certificates" = n, 
+         "Current energy efficiency (100 max)" = mean_current_energy_efficiency_rating,
+         "Potential energy efficiency (100 max)" = mean_potential_energy_efficiency_rating,
+         "Gap energy efficiency" = gap_eff) %>%
+  arrange("Current energy efficiency (100 max)") %>%
+  distinct() %>%
+  mutate(Tenure = if_else(Tenure == "overall", "NHS Grampian", Tenure)) %>%
+  group_by(Area) %>%
+  gt() %>%
+  opt_interactive(use_pagination = FALSE)
+
+
+table2 <- efficiency %>%
+  mutate(across(ends_with("_c"), ~.x*100)) %>%
+  mutate(across(where(is.numeric), ~round(.x, 0))) %>%
+  select(Area = la, Tenure = char, "No of certificates" = n, 
+         "Current energy efficiency (% A to C)" = mean_current_above_c,
+         "Potential energy efficiency (% A to C)" = mean_potential_above_c,
+         "Gap energy efficiency" = gap_c) %>%
+  distinct() %>%
+  mutate(Tenure = if_else(Tenure == "overall", "NHS Grampian", Tenure)) %>%
+  group_by(Area) %>%
+  gt() %>%
+  opt_interactive(use_pagination = FALSE)
+
+my_colours <- c("black", "blue", "aquamarine", "orange", "red")
+
+factpal <- colorFactor(my_colours, df2_oa_centroid$current_above_c2, na.color = "lightgray")
+
+map1 <- leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(weight = 0.2, fill = FALSE, color = "black", data = df2_oa) %>%
+  addCircles(fillColor =  ~factpal(current_above_c2), fillOpacity = 1, 
+           data = df2_oa_centroid, color = ~factpal(current_above_c2), popup = ~htmlEscape(current_above_c)) %>%
+  addLegend(pal = factpal, values = ~current_above_c2, opacity = 1, 
+            title = "% with A to C energy efficiency (output areas)", data = df2_oa_centroid) 
+
+map1 <- leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(weight = 0.2, fill = FALSE, color = "black", data = df2_oa) %>%
+  addCircles(fillColor =  ~factpal(current_above_c2), fillOpacity = 1, 
+           data = df2_oa_centroid, color = ~factpal(current_above_c2), popup = ~htmlEscape(current_above_c)) %>%
+  addLegend(pal = factpal, values = ~current_above_c2, opacity = 1, 
+            title = "% with A to C energy efficiency (output areas)", data = df2_oa_centroid) 
+
+map2 <- leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(weight = 0.2, fill = FALSE, color = "black", data = df2_oa) %>%
+  addCircles(fillColor =  ~factpal(potential_above_c2), fillOpacity = 1, 
+           data = df2_oa_centroid, color = ~factpal(potential_above_c2), 
+           popup = ~htmlEscape(potential_above_c)) %>%
+  addLegend(pal = factpal, values = ~potential_above_c2, opacity = 1, 
+            title = "% with A to C energy efficiency (output areas)", data = df2_oa_centroid) 
+
+
+saveRDS(table1, "table1.RDS")
+saveRDS(table2, "table2.RDS")
+saveRDS(map1, "map1.RDS")
+saveRDS(map2, "map2.RDS")
+
+```
+
+## Energy efficiency by tenure
+
+Table 1 shows the average energy efficiency rating (out of 100) by tenure for the whole of NHS Grampian and for its constituent councils. Tenure is recorded by the energy assessor and so may be unknown or incorrect. Socially rented housing will include housing association and council owned properties. Key findings:
+
+-   Privately rented and owner occupied properties perform worst while socially rented properties are the most energy efficient
+-   The potential energy efficiency is similiar across tenures meaning that the biggest gap between current and potential performance is in privately rented and owner occupied properties. 
+-   The gaps between potential amd current energy effeciency are wider in Aberdeenshire and Moray than Aberdeen City.
+
+```{r}
+#| label: tbl-mean-ee-by-tenure
+#| tbl-cap: Mean energy efficiency by tenure
+
+readRDS("table1.RDS")
+
+```
+
+A similar picture is seen in Table 2 to Table 1 when we look at whether a property is in the A to C energy efficiency band (signifying satisfactory energy efficiency and above). The minimum score for band C out of 100 is 69, for B it is 81 and A it is 92.
+
+
+```{r}
+#| label: tbl-atoc-ee-by-tenure
+#| tbl-cap: A to C energy efficiency by tenure
+
+readRDS("table2.RDS")
+
+```
+
+Figure 1 maps the percentage of properties in an output area (neighbourhood of about 50 households) that have a current energy efficiency of A to C. Areas where no property has a certificate or areas with 10 or fewer certificates are shown as NA. The map is interactive so you can zoom in on particular areas and if click on the dot when zoomed in it will give you the exact percentage for that area. To avoid large geographic areas from dominating, the colouring of areas is by a dot at their centre.
+
+
+```{r}
+#| label: fig-atoc-oa
+#| fig-cap: "% of properties A to C by output areas"
+
+readRDS("map1.RDS")
+
+```
+
+Figure 2 is Figure 1 but potential energy efficiency rather than current.
+
+```{r}
+#| label: fig-atoc-oa-pot
+#| fig-cap: "Potential % of properties A to C by output areas"
+
+readRDS("map2.RDS")
+
+```

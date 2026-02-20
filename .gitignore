@@ -1,0 +1,11 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+df.RDS
+df2_oa.RDS
+df2_oa_centroid.RDS
+file_import.R
+base.duckdb
+*.parquet
+*.Rproj
