@@ -352,8 +352,8 @@ map2 <- leaflet() %>%
 Table 1 shows the average energy efficiency rating (out of 100) by tenure for the whole of NHS Grampian and for its constituent councils. Tenure is recorded by the energy assessor and so may be unknown or incorrect. Socially rented housing will include housing association and council owned properties. Key findings:
 
 -   Privately rented and owner occupied properties perform worst while socially rented properties are the most energy efficient
--   The potential energy efficiency is similiar across tenures meaning that the biggest gap between current and potential performance is in privately rented and owner occupied properties. 
--   The gaps between potential amd current energy effeciency are wider in Aberdeenshire and Moray than Aberdeen City.
+-   The potential energy efficiency is similar across tenures meaning that the biggest gap between current and potential performance is in privately rented and owner occupied properties. 
+-   The gaps between potential and current energy efficiency are wider in Aberdeenshire and Moray than Aberdeen City.
 
 ```{r}
 #| label: tbl-mean-ee-by-tenure
